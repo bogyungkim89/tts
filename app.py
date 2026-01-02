@@ -1,59 +1,85 @@
 import streamlit as st
-from gtts import gTTS
+import edge_tts
+import asyncio
 import io
 
 # 페이지 기본 설정
-st.set_page_config(page_title="텍스트 음성 변환기", page_icon="🎙️")
+st.set_page_config(page_title="고속 AI 성우", page_icon="⚡")
 
-st.title("🎙️ AI 텍스트-음성 변환기 (TTS)")
-st.caption("Google Text-to-Speech를 활용하여 텍스트를 음성으로 변환합니다.")
+st.title("⚡ 고속 AI 텍스트-음성 변환기")
+st.markdown("""
+<style>
+    .stTextArea textarea { font-size: 16px; }
+</style>
+""", unsafe_allow_html=True)
+st.caption("Microsoft Edge의 신경망 엔진을 사용하여 빠르고 자연스럽습니다.")
 
-# 1. 입력 영역
-with st.form("tts_form"):
-    text_input = st.text_area(
-        "변환할 텍스트를 입력하세요:",
-        height=150,
-        placeholder="여기에 내용을 입력하면 음성으로 읽어줍니다."
+# --- 사이드바 설정 (음성 옵션) ---
+with st.sidebar:
+    st.header("🔊 음성 설정")
+    
+    # 성별/성우 선택
+    voice_option = st.selectbox(
+        "목소리 선택",
+        options=["ko-KR-SunHiNeural", "ko-KR-InJoonNeural"],
+        format_func=lambda x: "여성 (선희)" if "SunHi" in x else "남성 (인준)"
     )
     
-    # 옵션 설정 (사이드바 혹은 폼 내부)
-    col1, col2 = st.columns(2)
-    with col1:
-        lang_option = st.selectbox("언어 선택", ["한국어 (ko)", "영어 (en)", "일본어 (ja)"])
-        lang_code = lang_option.split("(")[1].replace(")", "") # ko, en, ja 추출
+    # 속도 조절 (기본값 +30% = 1.3배속)
+    speed_rate = st.slider(
+        "말하기 속도", 
+        min_value=0.5, 
+        max_value=2.0, 
+        value=1.3, 
+        step=0.1,
+        help="1.0이 기본 속도입니다. 1.3은 1.3배속입니다."
+    )
     
-    with col2:
-        # gTTS는 속도 조절이 제한적(slow=True/False)입니다.
-        is_slow = st.checkbox("느리게 읽기")
+    # edge-tts는 퍼센트 문자열로 속도를 받음 (예: +30%)
+    rate_str = f"{int((speed_rate - 1.0) * 100):+d}%"
 
-    submit_button = st.form_submit_button("음성 변환하기")
+# --- 메인 기능 ---
+with st.form("tts_form"):
+    text_input = st.text_area(
+        "텍스트 입력",
+        height=150,
+        placeholder="변환할 내용을 입력하세요."
+    )
+    submit_button = st.form_submit_button("즉시 변환 (Enter)")
 
-# 2. 변환 로직
+# 비동기 함수: 음성 생성 로직
+async def generate_audio(text, voice, rate):
+    communicate = edge_tts.Communicate(text, voice, rate=rate)
+    # 메모리 버퍼 생성
+    audio_data = io.BytesIO()
+    # 스트림으로 데이터를 받아 바로 메모리에 씀 (속도 최적화)
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data.write(chunk["data"])
+    
+    audio_data.seek(0)
+    return audio_data
+
+# 변환 실행
 if submit_button:
-    if text_input.strip() == "":
-        st.warning("텍스트를 입력해주세요!")
+    if not text_input.strip():
+        st.warning("텍스트를 입력해주세요.")
     else:
-        with st.spinner("음성을 생성하는 중입니다..."):
-            try:
-                # gTTS 객체 생성
-                tts = gTTS(text=text_input, lang=lang_code, slow=is_slow)
+        try:
+            with st.spinner("⚡ 초고속 변환 중..."):
+                # 비동기 함수 실행
+                mp3_fp = asyncio.run(generate_audio(text_input, voice_option, rate_str))
                 
-                # 파일을 디스크에 저장하지 않고 메모리(BytesIO)에 저장 (클라우드 환경 최적화)
-                mp3_fp = io.BytesIO()
-                tts.write_to_fp(mp3_fp)
-                mp3_fp.seek(0) # 파일 포인터를 처음으로 이동
-                
-                # 3. 오디오 출력
-                st.success("변환 완료!")
+                # 오디오 플레이어
                 st.audio(mp3_fp, format='audio/mp3')
                 
-                # 다운로드 버튼 제공
+                # 다운로드 버튼
                 st.download_button(
                     label="MP3 다운로드",
                     data=mp3_fp,
-                    file_name="tts_output.mp3",
+                    file_name="speed_tts_output.mp3",
                     mime="audio/mp3"
                 )
-                
-            except Exception as e:
-                st.error(f"오류가 발생했습니다: {e}")
+        except Exception as e:
+            st.error(f"오류가 발생했습니다: {e}")
+
