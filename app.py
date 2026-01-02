@@ -3,83 +3,117 @@ import edge_tts
 import asyncio
 import io
 
-# 페이지 기본 설정
-st.set_page_config(page_title="고속 AI 성우", page_icon="⚡")
+# 페이지 설정
+st.set_page_config(page_title="무제한급 AI 성우", page_icon="🎙️")
 
-st.title("⚡ 고속 AI 텍스트-음성 변환기")
-st.markdown("""
-<style>
-    .stTextArea textarea { font-size: 16px; }
-</style>
-""", unsafe_allow_html=True)
-st.caption("Microsoft Edge의 신경망 엔진을 사용하여 빠르고 자연스럽습니다.")
+st.title("🎙️ 고속 AI 성우 (대용량 안정화 버전)")
+st.info("💡 아주 긴 글은 변환에 시간이 걸립니다. 완료될 때까지 브라우저를 닫지 마세요.")
 
-# --- 사이드바 설정 (음성 옵션) ---
+# --- 사이드바 설정 ---
 with st.sidebar:
-    st.header("🔊 음성 설정")
-    
-    # 성별/성우 선택
+    st.header("⚙️ 설정")
     voice_option = st.selectbox(
         "목소리 선택",
         options=["ko-KR-SunHiNeural", "ko-KR-InJoonNeural"],
         format_func=lambda x: "여성 (선희)" if "SunHi" in x else "남성 (인준)"
     )
     
-    # 속도 조절 (기본값 +30% = 1.3배속)
     speed_rate = st.slider(
-        "말하기 속도", 
-        min_value=0.5, 
-        max_value=2.0, 
-        value=1.3, 
-        step=0.1,
-        help="1.0이 기본 속도입니다. 1.3은 1.3배속입니다."
+        "말하기 속도", min_value=0.5, max_value=2.0, value=1.3, step=0.1
     )
-    
-    # edge-tts는 퍼센트 문자열로 속도를 받음 (예: +30%)
     rate_str = f"{int((speed_rate - 1.0) * 100):+d}%"
 
 # --- 메인 기능 ---
 with st.form("tts_form"):
     text_input = st.text_area(
         "텍스트 입력",
-        height=150,
-        placeholder="변환할 내용을 입력하세요."
+        height=300,
+        placeholder="소설, 논문 등 매우 긴 텍스트를 입력하세요. 자동으로 나누어 처리합니다."
     )
-    submit_button = st.form_submit_button("즉시 변환 (Enter)")
+    submit_button = st.form_submit_button("대용량 변환 시작")
 
-# 비동기 함수: 음성 생성 로직
-async def generate_audio(text, voice, rate):
-    communicate = edge_tts.Communicate(text, voice, rate=rate)
-    # 메모리 버퍼 생성
-    audio_data = io.BytesIO()
-    # 스트림으로 데이터를 받아 바로 메모리에 씀 (속도 최적화)
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_data.write(chunk["data"])
+# 텍스트 분할 함수 (안정성을 위해 1000자 단위로 축소)
+def split_text(text, max_length=1000):
+    chunks = []
+    current_chunk = ""
+    sentences = text.split('.') # 문장 단위로 분리
     
-    audio_data.seek(0)
-    return audio_data
+    for sentence in sentences:
+        if not sentence.strip():
+            continue
+        sentence = sentence + "."
+        if len(current_chunk) + len(sentence) < max_length:
+            current_chunk += sentence
+        else:
+            chunks.append(current_chunk)
+            current_chunk = sentence
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
 
-# 변환 실행
+# 핵심: 재시도 로직이 포함된 음성 생성 함수
+async def generate_audio_stream(text_chunks, voice, rate):
+    combined_audio = io.BytesIO()
+    total_chunks = len(text_chunks)
+    
+    # 진행률 표시바 및 상태 메시지
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, chunk in enumerate(text_chunks):
+        status_text.text(f"진행 중: {i+1} / {total_chunks} 구간 변환 중...")
+        
+        retry_count = 0
+        max_retries = 3
+        success = False
+        
+        while not success and retry_count < max_retries:
+            try:
+                communicate = edge_tts.Communicate(chunk, voice, rate=rate)
+                async for item in communicate.stream():
+                    if item["type"] == "audio":
+                        combined_audio.write(item["data"])
+                success = True
+                
+            except Exception as e:
+                retry_count += 1
+                status_text.warning(f"구간 {i+1} 오류 발생. 2초 후 재시도합니다... ({retry_count}/{max_retries})")
+                await asyncio.sleep(2) # 오류 시 2초 대기
+        
+        if not success:
+            st.error(f"구간 {i+1} 변환에 실패했습니다. 너무 긴 문장이 있거나 서버 문제입니다.")
+            return None
+
+        # [중요] 서버 차단 방지를 위한 휴식 (0.5초)
+        # 긴 글일수록 이 딜레이가 중요합니다.
+        await asyncio.sleep(0.5)
+        
+        # 진행률 업데이트
+        progress_bar.progress((i + 1) / total_chunks)
+        
+    combined_audio.seek(0)
+    status_text.text("✅ 모든 변환이 완료되었습니다!")
+    return combined_audio
+
+# 실행 로직
 if submit_button:
     if not text_input.strip():
-        st.warning("텍스트를 입력해주세요.")
+        st.warning("내용을 입력해주세요.")
     else:
+        # 비동기 실행을 위한 루프 생성
         try:
-            with st.spinner("⚡ 초고속 변환 중..."):
-                # 비동기 함수 실행
-                mp3_fp = asyncio.run(generate_audio(text_input, voice_option, rate_str))
-                
-                # 오디오 플레이어
+            chunks = split_text(text_input)
+            st.write(f"총 {len(chunks)}개 구간으로 나누어 작업을 시작합니다. (예상 소요시간: {len(chunks)*2}초 내외)")
+            
+            mp3_fp = asyncio.run(generate_audio_stream(chunks, voice_option, rate_str))
+            
+            if mp3_fp:
                 st.audio(mp3_fp, format='audio/mp3')
-                
-                # 다운로드 버튼
                 st.download_button(
-                    label="MP3 다운로드",
+                    label="📂 전체 MP3 다운로드",
                     data=mp3_fp,
-                    file_name="speed_tts_output.mp3",
+                    file_name="unlimited_tts.mp3",
                     mime="audio/mp3"
                 )
         except Exception as e:
-            st.error(f"오류가 발생했습니다: {e}")
-
+            st.error(f"예기치 못한 오류: {e}")
